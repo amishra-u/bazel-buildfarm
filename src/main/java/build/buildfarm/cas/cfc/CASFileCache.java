@@ -118,10 +118,12 @@ import java.util.Map;
 import java.util.Set;
 import java.util.Stack;
 import java.util.UUID;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -177,6 +179,7 @@ public abstract class CASFileCache implements ContentAddressableStorage {
   private final LockMap locks = new LockMap();
   @Nullable private final ContentAddressableStorage delegate;
   private final boolean delegateSkipLoad;
+  private final BlockingQueue<String> blockingQueue = new LinkedBlockingQueue<>(100);
   private final LoadingCache<String, Lock> keyLocks =
       CacheBuilder.newBuilder()
           .expireAfterAccess(
@@ -798,7 +801,7 @@ public abstract class CASFileCache implements ContentAddressableStorage {
     }
   }
 
-  private static class UniqueWriteOutputStream extends CancellableOutputStream {
+  private class UniqueWriteOutputStream extends CancellableOutputStream {
     private final CancellableOutputStream out;
     private final Consumer<Boolean> onClosed;
     private final long size;
@@ -970,6 +973,7 @@ public abstract class CASFileCache implements ContentAddressableStorage {
                     key.getDigest(),
                     UUID.fromString(key.getIdentifier()),
                     cancelled -> {
+                      blockingQueue.remove(getKey(key.getDigest(), false) + "." + key.getIdentifier());
                       if (cancelled) {
                         out = null;
                         isReset = true;
@@ -2907,11 +2911,15 @@ public abstract class CASFileCache implements ContentAddressableStorage {
         }
         out.write(b, off, len);
         written += len;
+        if (!blockingQueue.remove(writeKey)) {
+          log.log(Level.WARNING, "should not happen");
+        }
       }
 
       @Override
       public void close() throws IOException {
         out.flush();
+        blockingQueue.remove(writeKey);
         long size = countingOut.written();
         // has some trouble with multiple closes, fortunately we have something above to handle this
         out.close(); // should probably discharge here as well
@@ -2932,6 +2940,17 @@ public abstract class CASFileCache implements ContentAddressableStorage {
         }
 
         commit();
+      }
+
+      @Override
+      public boolean isReady() {
+        try {
+          blockingQueue.put(writeKey);
+        } catch (InterruptedException e) {
+          log.log(Level.WARNING, format("failed to request next chunk for %s", writeKey));
+          return false;
+        }
+        return true;
       }
 
       void commit() throws IOException {

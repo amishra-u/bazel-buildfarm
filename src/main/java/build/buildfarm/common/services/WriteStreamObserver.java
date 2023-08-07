@@ -23,6 +23,7 @@ import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
 import static io.grpc.Status.ABORTED;
 import static io.grpc.Status.CANCELLED;
 import static io.grpc.Status.INVALID_ARGUMENT;
+import static io.grpc.Status.fromThrowable;
 import static java.lang.String.format;
 
 import build.bazel.remote.execution.v2.Compressor;
@@ -465,7 +466,8 @@ public class WriteStreamObserver implements StreamObserver<WriteRequest> {
 
   @Override
   public void onError(Throwable t) {
-    log.log(Level.FINER, format("write error for %s", name), t);
+    responseObserver.onError(fromThrowable(t).asException());
+    log.log(Level.WARNING, format("write error for %s", name), t);
   }
 
   @Override
