@@ -2946,7 +2946,7 @@ public abstract class CASFileCache implements ContentAddressableStorage {
       public boolean isReady() {
         try {
           blockingQueue.put(writeKey);
-          log.log(Level.WARNING, format("number of concurrent writes %d", blockingQueue.size()));
+          log.log(Level.SEVERE, format("number of concurrent writes %d", blockingQueue.size()));
         } catch (InterruptedException e) {
           log.log(Level.WARNING, format("failed to request next chunk for %s", writeKey));
           return false;
