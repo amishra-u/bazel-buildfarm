@@ -23,13 +23,13 @@ import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
 import static io.grpc.Status.ABORTED;
 import static io.grpc.Status.CANCELLED;
 import static io.grpc.Status.INVALID_ARGUMENT;
-import static io.grpc.Status.fromThrowable;
 import static java.lang.String.format;
 
 import build.bazel.remote.execution.v2.Compressor;
 import build.bazel.remote.execution.v2.Digest;
 import build.bazel.remote.execution.v2.RequestMetadata;
 import build.buildfarm.cas.DigestMismatchException;
+import build.buildfarm.cas.cfc.CASFileCache;
 import build.buildfarm.common.EntryLimitException;
 import build.buildfarm.common.UrlPath.InvalidResourceNameException;
 import build.buildfarm.common.Write;
@@ -44,6 +44,7 @@ import com.google.protobuf.ByteString;
 import io.grpc.Context;
 import io.grpc.Context.CancellableContext;
 import io.grpc.Status;
+import io.grpc.stub.ServerCallStreamObserver;
 import io.grpc.stub.StreamObserver;
 import io.prometheus.client.Histogram;
 import java.io.IOException;
@@ -52,6 +53,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
 import javax.annotation.concurrent.GuardedBy;
+import lombok.SneakyThrows;
 import lombok.extern.java.Log;
 
 @Log
@@ -67,7 +69,7 @@ public class WriteStreamObserver implements StreamObserver<WriteRequest> {
   private final long deadlineAfter;
   private final TimeUnit deadlineAfterUnits;
   private final Runnable requestNext;
-  private final StreamObserver<WriteResponse> responseObserver;
+  private final ServerCallStreamObserver<WriteResponse> responseObserver;
   private final CancellableContext withCancellation;
 
   private boolean initialized = false;
@@ -86,18 +88,28 @@ public class WriteStreamObserver implements StreamObserver<WriteRequest> {
   private long requestBytes = 0;
   private Compressor.Value compressor;
 
+  @SneakyThrows
   public WriteStreamObserver(
       Instance instance,
       long deadlineAfter,
       TimeUnit deadlineAfterUnits,
       Runnable requestNext,
-      StreamObserver<WriteResponse> responseObserver) {
+      ServerCallStreamObserver<WriteResponse> responseObserver) {
     this.instance = instance;
     this.deadlineAfter = deadlineAfter;
     this.deadlineAfterUnits = deadlineAfterUnits;
     this.requestNext = requestNext;
     this.responseObserver = responseObserver;
     withCancellation = Context.current().withCancellation();
+
+    if (instance instanceof CASFileCache.UniqueWriteOutputStream) {
+      responseObserver.setOnReadyHandler(
+          () -> {
+            if (responseObserver.isReady() && wasReady.compareAndSet(false, true)) {
+              this.requestNext.run();
+            }
+          });
+    }
   }
 
   @Override
@@ -418,10 +430,18 @@ public class WriteStreamObserver implements StreamObserver<WriteRequest> {
   }
 
   private void requestNextIfReady(FeedbackOutputStream out) {
-    if (out.isReady()) {
+    if (isReady(out)) {
       requestNext.run();
     } else {
       wasReady.set(false);
+    }
+  }
+
+  private boolean isReady(FeedbackOutputStream out) {
+    if (out instanceof CASFileCache.UniqueWriteOutputStream) {
+      return responseObserver.isReady() && out.isReady();
+    } else {
+      return out.isReady();
     }
   }
 
@@ -466,7 +486,6 @@ public class WriteStreamObserver implements StreamObserver<WriteRequest> {
 
   @Override
   public void onError(Throwable t) {
-    responseObserver.onError(fromThrowable(t).asException());
     log.log(Level.WARNING, format("write error for %s", name), t);
   }
 

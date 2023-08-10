@@ -27,7 +27,7 @@ import com.google.common.util.concurrent.SettableFuture;
 import com.google.protobuf.ByteString;
 import io.grpc.Context;
 import io.grpc.Context.CancellableContext;
-import io.grpc.stub.StreamObserver;
+import io.grpc.stub.ServerCallStreamObserver;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import org.junit.Test;
@@ -43,7 +43,7 @@ public class WriteStreamObserverTest {
   public void cancelledBeforeGetOutputIsSilent() throws Exception {
     CancellableContext context = Context.current().withCancellation();
     Instance instance = mock(Instance.class);
-    StreamObserver<WriteResponse> responseObserver = mock(StreamObserver.class);
+    ServerCallStreamObserver<WriteResponse> responseObserver = mock(ServerCallStreamObserver.class);
     ByteString cancelled = ByteString.copyFromUtf8("cancelled data");
     Digest cancelledDigest = DIGEST_UTIL.compute(cancelled);
     UUID uuid = UUID.randomUUID();
