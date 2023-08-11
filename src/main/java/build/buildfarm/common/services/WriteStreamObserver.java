@@ -434,6 +434,7 @@ public class WriteStreamObserver implements StreamObserver<WriteRequest> {
       requestNext.run();
     } else {
       wasReady.set(false);
+      log.log(Level.SEVERE, "back pressure has begun");
     }
   }
 
