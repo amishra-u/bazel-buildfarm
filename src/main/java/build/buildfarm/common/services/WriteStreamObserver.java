@@ -36,6 +36,7 @@ import build.buildfarm.common.Write;
 import build.buildfarm.common.grpc.TracingMetadataUtils;
 import build.buildfarm.common.io.FeedbackOutputStream;
 import build.buildfarm.instance.Instance;
+import build.buildfarm.instance.shard.ShardInstance;
 import com.google.bytestream.ByteStreamProto.WriteRequest;
 import com.google.bytestream.ByteStreamProto.WriteResponse;
 import com.google.common.util.concurrent.FutureCallback;
@@ -102,7 +103,7 @@ public class WriteStreamObserver implements StreamObserver<WriteRequest> {
     this.responseObserver = responseObserver;
     withCancellation = Context.current().withCancellation();
 
-    if (instance instanceof CASFileCache.UniqueWriteOutputStream) {
+    if (!(instance instanceof ShardInstance)) {
       responseObserver.setOnReadyHandler(
           () -> {
             if (responseObserver.isReady() && wasReady.compareAndSet(false, true)) {
