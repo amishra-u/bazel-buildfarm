@@ -29,12 +29,14 @@ import build.bazel.remote.execution.v2.Compressor;
 import build.bazel.remote.execution.v2.Digest;
 import build.bazel.remote.execution.v2.RequestMetadata;
 import build.buildfarm.cas.DigestMismatchException;
+import build.buildfarm.cas.cfc.CASFileCache;
 import build.buildfarm.common.EntryLimitException;
 import build.buildfarm.common.UrlPath.InvalidResourceNameException;
 import build.buildfarm.common.Write;
 import build.buildfarm.common.grpc.TracingMetadataUtils;
 import build.buildfarm.common.io.FeedbackOutputStream;
 import build.buildfarm.instance.Instance;
+import build.buildfarm.instance.shard.ShardInstance;
 import com.google.bytestream.ByteStreamProto.WriteRequest;
 import com.google.bytestream.ByteStreamProto.WriteResponse;
 import com.google.common.util.concurrent.FutureCallback;
@@ -43,6 +45,7 @@ import com.google.protobuf.ByteString;
 import io.grpc.Context;
 import io.grpc.Context.CancellableContext;
 import io.grpc.Status;
+import io.grpc.stub.ServerCallStreamObserver;
 import io.grpc.stub.StreamObserver;
 import io.prometheus.client.Histogram;
 import java.io.IOException;
@@ -51,6 +54,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
 import javax.annotation.concurrent.GuardedBy;
+import lombok.SneakyThrows;
 import lombok.extern.java.Log;
 
 @Log
@@ -66,7 +70,7 @@ public class WriteStreamObserver implements StreamObserver<WriteRequest> {
   private final long deadlineAfter;
   private final TimeUnit deadlineAfterUnits;
   private final Runnable requestNext;
-  private final StreamObserver<WriteResponse> responseObserver;
+  private final ServerCallStreamObserver<WriteResponse> responseObserver;
   private final CancellableContext withCancellation;
 
   private boolean initialized = false;
@@ -85,18 +89,28 @@ public class WriteStreamObserver implements StreamObserver<WriteRequest> {
   private long requestBytes = 0;
   private Compressor.Value compressor;
 
+  @SneakyThrows
   public WriteStreamObserver(
       Instance instance,
       long deadlineAfter,
       TimeUnit deadlineAfterUnits,
       Runnable requestNext,
-      StreamObserver<WriteResponse> responseObserver) {
+      ServerCallStreamObserver<WriteResponse> responseObserver) {
     this.instance = instance;
     this.deadlineAfter = deadlineAfter;
     this.deadlineAfterUnits = deadlineAfterUnits;
     this.requestNext = requestNext;
     this.responseObserver = responseObserver;
     withCancellation = Context.current().withCancellation();
+
+    if (!(instance instanceof ShardInstance)) {
+      responseObserver.setOnReadyHandler(
+          () -> {
+            if (responseObserver.isReady() && wasReady.compareAndSet(false, true)) {
+              this.requestNext.run();
+            }
+          });
+    }
   }
 
   @Override
@@ -417,10 +431,19 @@ public class WriteStreamObserver implements StreamObserver<WriteRequest> {
   }
 
   private void requestNextIfReady(FeedbackOutputStream out) {
-    if (out.isReady()) {
+    if (isReady(out)) {
       requestNext.run();
     } else {
       wasReady.set(false);
+      log.log(Level.SEVERE, "back pressure has begun");
+    }
+  }
+
+  private boolean isReady(FeedbackOutputStream out) {
+    if (out instanceof CASFileCache.UniqueWriteOutputStream) {
+      return responseObserver.isReady() && out.isReady();
+    } else {
+      return out.isReady();
     }
   }
 
@@ -465,7 +488,7 @@ public class WriteStreamObserver implements StreamObserver<WriteRequest> {
 
   @Override
   public void onError(Throwable t) {
-    log.log(Level.FINER, format("write error for %s", name), t);
+    log.log(Level.WARNING, format("write error for %s", name), t);
   }
 
   @Override
