@@ -640,6 +640,7 @@ public abstract class CASFileCache implements ContentAddressableStorage {
         });
     byte[] buffer = new byte[CHUNK_SIZE];
     int initialLength;
+
     try {
       initialLength = in.read(buffer);
     } catch (IOException e) {
@@ -686,6 +687,7 @@ public abstract class CASFileCache implements ContentAddressableStorage {
         }
         if (len < 0) {
           in.close();
+          accessRecorder.execute(() -> recordAccess(ImmutableList.of(getKey(digest, false))));
           blobObserver.onCompleted();
         }
       }
