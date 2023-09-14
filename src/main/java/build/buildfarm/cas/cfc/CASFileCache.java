@@ -109,6 +109,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.AbstractMap;
 import java.util.Collections;
 import java.util.Date;
@@ -390,6 +391,7 @@ public abstract class CASFileCache implements ContentAddressableStorage {
             ? new MemoryFileDirectoriesIndex(entryPathStrategy)
             : new SqliteFileDirectoriesIndex(directoriesIndexUrl, entryPathStrategy);
     header.before = header.after = header;
+    logUniqueDigestAccessed();
   }
 
   private static Digest keyToDigest(String key, long size, DigestUtil digestUtil)
@@ -3010,12 +3012,14 @@ public abstract class CASFileCache implements ContentAddressableStorage {
     final long size;
     int referenceCount;
     Deadline existsDeadline;
+    Instant lastAccessTime;
 
     private Entry() {
       key = null;
       size = -1;
       referenceCount = -1;
       existsDeadline = null;
+      this.lastAccessTime = null;
     }
 
     public Entry(String key, long size, Deadline existsDeadline) {
@@ -3023,6 +3027,7 @@ public abstract class CASFileCache implements ContentAddressableStorage {
       this.size = size;
       referenceCount = 1;
       this.existsDeadline = existsDeadline;
+      this.lastAccessTime = Instant.now();
     }
 
     public boolean isLinked() {
@@ -3041,6 +3046,7 @@ public abstract class CASFileCache implements ContentAddressableStorage {
       before = existingEntry.before;
       before.after = this;
       after.before = this;
+      this.lastAccessTime = Instant.now();
     }
 
     // return true iff the entry's state is changed from unreferenced to referenced
@@ -3210,5 +3216,30 @@ public abstract class CASFileCache implements ContentAddressableStorage {
         throw ioEx;
       }
     }
+  }
+
+  private void logUniqueDigestAccessed() {
+    new Thread(
+            () -> {
+              while (true) {
+                try {
+                  Entry temp = header.before;
+                  Instant oneHourAgo = Instant.now().minus(1, ChronoUnit.HOURS);
+                  int uniqueDigestCount = 0;
+                  synchronized(this) {
+                    while (temp != header && !temp.lastAccessTime.isBefore(oneHourAgo)) {
+                      uniqueDigestCount++;
+                      temp = temp.before;
+                    }
+                  }
+                  log.log(Level.INFO, format("unique digest accessed : %d", uniqueDigestCount));
+                  log.log(Level.INFO, format("total number of digests : %d", storage.size()));
+                  MINUTES.sleep(15);
+                } catch (InterruptedException e) {
+                  log.log(Level.SEVERE, "interuptted", e);
+                }
+              }
+            }
+    ).start();
   }
 }
