@@ -37,7 +37,6 @@ public final class WorkerStubs {
   @SuppressWarnings("rawtypes")
   public static LoadingCache create(DigestUtil digestUtil, Duration timeout) {
     return CacheBuilder.newBuilder()
-        .expireAfterAccess(10, TimeUnit.MINUTES)
         .removalListener(
             (RemovalListener<String, Instance>)
                 notification -> stopInstance(notification.getValue()))

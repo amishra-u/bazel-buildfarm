@@ -245,6 +245,7 @@ public class ShardInstance extends AbstractServerInstance {
   private boolean stopping = false;
   private boolean stopped = true;
   private final Thread prometheusMetricsThread;
+  private final Thread workerStubsRefresher;
 
   private static BuildfarmConfigs configs = BuildfarmConfigs.getInstance();
 
@@ -515,6 +516,39 @@ public class ShardInstance extends AbstractServerInstance {
               }
             },
             "Prometheus Metrics Collector");
+
+    workerStubsRefresher =
+        new Thread(
+            () -> {
+              while (!Thread.currentThread().isInterrupted()) {
+                try {
+                  Set<String> workersWithRegisteredStubs = workerStubs.asMap().keySet();
+                  Set<String> availableWorkers = backplane.getStorageWorkers();
+
+                  Set<String> unavailableWorkers = Sets.difference(workersWithRegisteredStubs, availableWorkers);
+                  Set<String> newWorkers = Sets.difference(availableWorkers, workersWithRegisteredStubs);
+
+                  unavailableWorkers.forEach(workerStubs::invalidate);
+                  workerStubs.getAll(newWorkers);
+
+                  if (!unavailableWorkers.isEmpty()) {
+                    log.log(Level.INFO, "Removed workers:", unavailableWorkers.toArray());
+                  }
+                  if (!newWorkers.isEmpty()) {
+                    log.log(Level.INFO, "New registered workers:", newWorkers.toArray());
+                  }
+
+                  MINUTES.sleep(10);
+                } catch (InterruptedException e) {
+                  Thread.currentThread().interrupt();
+                  break;
+                } catch (Exception e) {
+                  log.log(Level.SEVERE, "Could not refresh workerStubs", e);
+                }
+              }
+            },
+            "Worker Stub Refresher"
+        );
   }
 
   private void updateQueueSizes(List<QueueStatus> queues) {
@@ -557,6 +591,9 @@ public class ShardInstance extends AbstractServerInstance {
 
     if (prometheusMetricsThread != null) {
       prometheusMetricsThread.start();
+    }
+    if (workerStubsRefresher != null) {
+      workerStubsRefresher.start();
     }
   }
 
