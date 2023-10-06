@@ -254,7 +254,11 @@ public class ShardInstance extends AbstractServerInstance {
   private static Backplane createBackplane(String identifier) throws ConfigurationException {
     if (configs.getBackplane().getType().equals(SHARD)) {
       return new RedisShardBackplane(
-          identifier, ShardInstance::stripOperation, ShardInstance::stripQueuedOperation);
+          identifier,
+          /* subscribeToBackplane=*/ true,
+          configs.getServer().isRunFailsafeOperation(),
+          ShardInstance::stripOperation,
+          ShardInstance::stripQueuedOperation);
     } else {
       throw new IllegalArgumentException("Shard Backplane not set in config");
     }
@@ -568,10 +572,12 @@ public class ShardInstance extends AbstractServerInstance {
     stopping = true;
     log.log(Level.FINER, format("Instance %s is stopping", getName()));
     if (operationQueuer != null) {
-      operationQueuer.stop();
+      operationQueuer.interrupt();
+      operationQueuer.join();
     }
     if (dispatchedMonitor != null) {
       dispatchedMonitor.interrupt();
+      dispatchedMonitor.join();
     }
     if (prometheusMetricsThread != null) {
       prometheusMetricsThread.interrupt();
