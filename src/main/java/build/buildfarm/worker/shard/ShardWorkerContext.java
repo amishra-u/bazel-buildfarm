@@ -60,6 +60,8 @@ import build.buildfarm.worker.WorkerContext;
 import build.buildfarm.worker.cgroup.Cpu;
 import build.buildfarm.worker.cgroup.Group;
 import build.buildfarm.worker.cgroup.Mem;
+import build.buildfarm.worker.resources.LocalResourceSet;
+import build.buildfarm.worker.resources.LocalResourceSetUtils;
 import build.buildfarm.worker.resources.ResourceDecider;
 import build.buildfarm.worker.resources.ResourceLimits;
 import com.google.common.annotations.VisibleForTesting;
@@ -92,6 +94,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Stack;
 import java.util.logging.Level;
+import javax.annotation.Nullable;
 import lombok.extern.java.Log;
 
 @Log
@@ -128,6 +131,7 @@ class ShardWorkerContext implements WorkerContext {
   private final Group operationsGroup = executionsGroup.getChild("operations");
   private final CasWriter writer;
   private final boolean errorOperationRemainingResources;
+  private final LocalResourceSet resourceSet;
 
   static SetMultimap<String, String> getMatchProvisions(
       Iterable<ExecutionPolicy> policies, int executeStageWidth) {
@@ -161,6 +165,7 @@ class ShardWorkerContext implements WorkerContext {
       boolean onlyMulticoreTests,
       boolean allowBringYourOwnContainer,
       boolean errorOperationRemainingResources,
+      LocalResourceSet resourceSet,
       CasWriter writer) {
     this.name = name;
     this.matchProvisions = getMatchProvisions(policies, executeStageWidth);
@@ -181,6 +186,7 @@ class ShardWorkerContext implements WorkerContext {
     this.onlyMulticoreTests = onlyMulticoreTests;
     this.allowBringYourOwnContainer = allowBringYourOwnContainer;
     this.errorOperationRemainingResources = errorOperationRemainingResources;
+    this.resourceSet = resourceSet;
     this.writer = writer;
   }
 
@@ -272,6 +278,12 @@ class ShardWorkerContext implements WorkerContext {
 
   @SuppressWarnings("ConstantConditions")
   private void matchInterruptible(MatchListener listener) throws IOException, InterruptedException {
+    QueueEntry queueEntry = takeEntryOffOperationQueue(listener);
+    decideWhetherToKeepOperation(queueEntry, listener);
+  }
+
+  private QueueEntry takeEntryOffOperationQueue(MatchListener listener)
+      throws IOException, InterruptedException {
     listener.onWaitStart();
     QueueEntry queueEntry = null;
     try {
@@ -293,9 +305,13 @@ class ShardWorkerContext implements WorkerContext {
       // transient backplane errors will propagate a null queueEntry
     }
     listener.onWaitEnd();
+    return queueEntry;
+  }
 
+  private void decideWhetherToKeepOperation(QueueEntry queueEntry, MatchListener listener)
+      throws IOException, InterruptedException {
     if (queueEntry == null
-        || DequeueMatchEvaluator.shouldKeepOperation(matchProvisions, queueEntry)) {
+        || DequeueMatchEvaluator.shouldKeepOperation(matchProvisions, resourceSet, queueEntry)) {
       listener.onEntry(queueEntry);
     } else {
       backplane.rejectOperation(queueEntry);
@@ -306,6 +322,11 @@ class ShardWorkerContext implements WorkerContext {
   }
 
   @Override
+  public void returnLocalResources(QueueEntry queueEntry) {
+    LocalResourceSetUtils.releaseClaims(queueEntry.getPlatform(), resourceSet);
+  }
+
+  @Override
   public void match(MatchListener listener) throws InterruptedException {
     RetryingMatchListener dedupMatchListener =
         new RetryingMatchListener() {
@@ -313,7 +334,7 @@ class ShardWorkerContext implements WorkerContext {
 
           @Override
           public boolean getMatched() {
-            return !matched;
+            return matched;
           }
 
           @Override
@@ -327,20 +348,28 @@ class ShardWorkerContext implements WorkerContext {
           }
 
           @Override
-          public boolean onEntry(QueueEntry queueEntry) throws InterruptedException {
+          public boolean onEntry(@Nullable QueueEntry queueEntry) throws InterruptedException {
             if (queueEntry == null) {
               matched = true;
               return listener.onEntry(null);
             }
+            return onValidEntry(queueEntry);
+          }
+
+          private boolean onValidEntry(QueueEntry queueEntry) throws InterruptedException {
             String operationName = queueEntry.getExecuteEntry().getOperationName();
             if (activeOperations.putIfAbsent(operationName, queueEntry) != null) {
               log.log(Level.WARNING, "matched duplicate operation " + operationName);
               return false;
             }
+            return onUniqueEntry(queueEntry);
+          }
+
+          private boolean onUniqueEntry(QueueEntry queueEntry) throws InterruptedException {
             matched = true;
             boolean success = listener.onEntry(queueEntry);
             if (!success) {
-              requeue(operationName);
+              requeue(queueEntry.getExecuteEntry().getOperationName());
             }
             return success;
           }
@@ -351,7 +380,7 @@ class ShardWorkerContext implements WorkerContext {
             throw new RuntimeException(t);
           }
         };
-    while (dedupMatchListener.getMatched()) {
+    while (!dedupMatchListener.getMatched()) {
       try {
         matchInterruptible(dedupMatchListener);
       } catch (IOException e) {

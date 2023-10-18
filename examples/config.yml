@@ -31,6 +31,7 @@ server:
   recordBesEvents: false
   clusterId: local
   cloudRegion: us-east-1
+  gracefulShutdownSeconds: 0
   caches:
     directoryCacheMaxEntries: 10000
     commandCacheMaxEntries: 10000
@@ -110,13 +111,14 @@ worker:
       skipLoad: false
       hexBucketLevels: 0
       execRootCopyFallback: false
-      target:
+    #- type: GRPC
+    #  target: "grpc://host:port"
   executeStageWidth: 1
   inputFetchStageWidth: 1
   inputFetchDeadline: 60
   linkInputDirectories: true
-  realInputDirectories:
-    - "external"
+  linkedInputDirectories:
+    - "(?!external)[^/]+"
   execOwner:
   defaultMaxCores: 0
   limitGlobalExecution: false
