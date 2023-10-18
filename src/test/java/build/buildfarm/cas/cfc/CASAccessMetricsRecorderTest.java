@@ -2,29 +2,27 @@ package build.buildfarm.cas.cfc;
 
 import static com.google.common.truth.Truth.assertThat;
 import static org.junit.Assert.assertThrows;
+import static org.junit.Assert.fail;
+import static org.junit.Assume.assumeTrue;
 
 import build.bazel.remote.execution.v2.Digest;
+import build.buildfarm.backplane.Backplane;
 import java.io.IOException;
 import java.time.Duration;
-import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
 import java.util.UUID;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.ScheduledFuture;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
+import org.mockito.Mockito;
 
 @RunWith(JUnit4.class)
 public class CASAccessMetricsRecorderTest {
@@ -33,12 +31,16 @@ public class CASAccessMetricsRecorderTest {
   private long delay;
   private long window;
 
+  private Backplane backplane;
+
   @Before
   public void setup() throws IOException {
     this.delay = 10;
     this.window = 100;
+    this.backplane = Mockito.mock(Backplane.class);
     casAccessMetricsRecorder =
-        new CASAccessMetricsRecorder(Duration.ofMillis(window), Duration.ofMillis(delay));
+        new CASAccessMetricsRecorder(
+            backplane, Duration.ofMillis(window), Duration.ofMillis(delay));
   }
 
   @After
@@ -47,50 +49,50 @@ public class CASAccessMetricsRecorderTest {
   }
 
   @Test
-  public void testRecordRead() {
+  public void testRecordRead() throws IOException, InterruptedException {
     casAccessMetricsRecorder.start();
-    List<Digest> testDigests = new ArrayList<>(1000);
-    Map<Digest, AtomicInteger> expectedReadCounts = new HashMap<>(1000);
-    for (int i = 0; i < 1000; i++) {
+    int numberOfUniqueDigests = 100;
+    List<Digest> testDigests = new ArrayList<>(numberOfUniqueDigests);
+    Map<Digest, AtomicInteger> expectedReadCounts = new HashMap<>(numberOfUniqueDigests);
+    for (int i = 0; i < numberOfUniqueDigests; i++) {
       Digest randomDigest = Digest.newBuilder().setHash(UUID.randomUUID().toString()).build();
       testDigests.add(randomDigest);
       expectedReadCounts.put(randomDigest, new AtomicInteger(0));
     }
 
-    long windowStart = Instant.now().toEpochMilli() / delay * delay + delay * 5;
-    long windowEnd = windowStart + window;
+    // Start window from fifth delay window.
+    int numberOfDelayCycles = 5;
+    int numOfThreads = 5;
+    CountDownLatch doneSignal = new CountDownLatch(numOfThreads);
 
-    Thread[] threads = new Thread[5];
-    for (int i = 0; i < threads.length; i++) {
+    Thread[] threads = new Thread[numOfThreads];
+    for (int i = 0; i < numOfThreads; i++) {
       threads[i] =
-          new Thread(new RecordAndCountReads(testDigests, expectedReadCounts, windowStart));
+          new Thread(
+              new RecordAndCountReads(
+                  testDigests, expectedReadCounts, numberOfDelayCycles, doneSignal));
       threads[i].start();
     }
 
-    ScheduledExecutorService scheduledExecutor = Executors.newSingleThreadScheduledExecutor();
-    ScheduledFuture<Map<Digest, Integer>> actualReadCountsFuture =
-        scheduledExecutor.schedule(
-            this::getActualReadCounts,
-            windowEnd - Instant.now().toEpochMilli(),
-            TimeUnit.MILLISECONDS);
-
     try {
-      Map<Digest, Integer> actualReadCounts = actualReadCountsFuture.get();
+      doneSignal.await();
+      Map<Digest, Integer> actualReadCounts =
+          getActualReadCounts(numberOfDelayCycles + (int) (window / delay));
+
       actualReadCounts.forEach(
           (digest, readCount) -> {
-            // assert with +/-5% error, due to
-            assertThat(readCount).isLessThan((int) (expectedReadCounts.get(digest).get() * 1.05));
-            assertThat(readCount)
-                .isGreaterThan((int) (expectedReadCounts.get(digest).get() * 0.95));
+            // assert with +1 error, window may change before expected digest read count is
+            // updated.
+            assertThat(readCount).isAtMost(expectedReadCounts.get(digest).get() + 1);
+            assertThat(readCount).isAtLeast(expectedReadCounts.get(digest).get());
           });
-    } catch (InterruptedException | ExecutionException e) {
-      System.err.println(e.getMessage());
+    } catch (InterruptedException e) {
+      fail("Unexpected exception was thrown.");
     }
 
     for (Thread thread : threads) {
-      thread.interrupt();
+      thread.join();
     }
-    scheduledExecutor.shutdownNow();
   }
 
   @Test
@@ -107,50 +109,66 @@ public class CASAccessMetricsRecorderTest {
         IllegalStateException.class, () -> casAccessMetricsRecorder.recordWrite(randomDigest));
   }
 
-  private Map<Digest, Integer> getActualReadCounts() {
+  private Map<Digest, Integer> getActualReadCounts(int expectedIntervalNumber) {
     Map<Digest, Integer> actualReadCounts = new HashMap<>();
-    Iterator<Map<Digest, AtomicInteger>> iterator =
-        casAccessMetricsRecorder.getReadIntervalCountQueue().iterator();
 
-    while (iterator.hasNext()) {
-      Map<Digest, AtomicInteger> intervalReadCount = iterator.next();
-      if (!iterator.hasNext()) { // ignore last item.
-        break;
+    casAccessMetricsRecorder.lock.writeLock().lock();
+    try {
+      // if due to some reason test threads were unable to stop the metrics recorder on time, skip
+      // the test.
+      assumeTrue(expectedIntervalNumber == casAccessMetricsRecorder.intervalNumber);
+      for (Map<Digest, AtomicInteger> intervalReadCount :
+          casAccessMetricsRecorder.getReadIntervalCountQueue()) {
+        intervalReadCount.forEach(
+            (digest, count) ->
+                actualReadCounts.compute(
+                    digest, (d, v) -> v == null ? count.get() : v + count.get()));
       }
-      intervalReadCount.forEach(
-          (digest, count) ->
-              actualReadCounts.compute(
-                  digest, (d, v) -> v == null ? count.get() : v + count.get()));
+      return actualReadCounts;
+    } finally {
+      casAccessMetricsRecorder.lock.writeLock().unlock();
     }
-    return actualReadCounts;
   }
 
   class RecordAndCountReads implements Runnable {
     List<Digest> testDigests;
     Random rand = new Random();
     Map<Digest, AtomicInteger> expectedDigestAndReadCount;
-    long windowStart;
+    int numberOfDelayCycles;
+    CountDownLatch doneSignal;
 
     RecordAndCountReads(
         List<Digest> testDigests,
         Map<Digest, AtomicInteger> expectedDigestAndReadCount,
-        long windowStart) {
-      this.windowStart = windowStart;
+        int numberOfDelayCycles,
+        CountDownLatch doneSignal) {
+      this.numberOfDelayCycles = numberOfDelayCycles;
       this.testDigests = testDigests;
       this.expectedDigestAndReadCount = expectedDigestAndReadCount;
+      this.doneSignal = doneSignal;
     }
 
     @Override
     public void run() {
-      while (!Thread.currentThread().isInterrupted()) {
-        Digest digest = testDigests.get(rand.nextInt(testDigests.size()));
-        casAccessMetricsRecorder.recordRead(digest);
+      try {
+        while (!Thread.currentThread().isInterrupted()) {
+          if (casAccessMetricsRecorder.intervalNumber >= numberOfDelayCycles + window / delay) {
+            casAccessMetricsRecorder.stop();
+            break;
+          }
+          Digest digest = testDigests.get(rand.nextInt(testDigests.size()));
+          casAccessMetricsRecorder.recordRead(digest);
 
-        // record read counts for 1 full window.
-        if (Instant.now().toEpochMilli() >= windowStart
-            && Instant.now().toEpochMilli() < windowStart + window) {
-          expectedDigestAndReadCount.get(digest).incrementAndGet();
+          // record read counts for 1 full window.
+          if (casAccessMetricsRecorder.intervalNumber >= numberOfDelayCycles
+              && casAccessMetricsRecorder.intervalNumber < numberOfDelayCycles + window / delay) {
+            expectedDigestAndReadCount.get(digest).incrementAndGet();
+          }
         }
+      } catch (Exception e) {
+        Thread.currentThread().interrupt();
+      } finally {
+        doneSignal.countDown(); // Ensure each thread calls doneSignal once.
       }
     }
   }
