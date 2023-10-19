@@ -31,6 +31,7 @@ import build.buildfarm.backplane.Backplane;
 import build.buildfarm.cas.ContentAddressableStorage;
 import build.buildfarm.cas.ContentAddressableStorage.Blob;
 import build.buildfarm.cas.MemoryCAS;
+import build.buildfarm.cas.cfc.CASAccessMetricsRecorder;
 import build.buildfarm.cas.cfc.CASFileCache;
 import build.buildfarm.common.BuildfarmExecutors;
 import build.buildfarm.common.DigestUtil;
@@ -135,6 +136,7 @@ public final class Worker extends LoggingMain {
   private Backplane backplane;
   private LoadingCache<String, Instance> workerStubs;
   private AtomicBoolean released = new AtomicBoolean(true);
+  @Nullable private CASAccessMetricsRecorder casAccessMetricsRecorder;
 
   private Worker() {
     super("BuildFarmShardWorker");
@@ -300,7 +302,8 @@ public final class Worker extends LoggingMain {
         throw new IllegalArgumentException("Invalid cas type specified");
       case MEMORY:
       case FUSE: // FIXME have FUSE refer to a name for storage backing, and topo
-        return new MemoryCAS(cas.getMaxSizeBytes(), this::onStoragePut, delegate);
+        return new MemoryCAS(
+            cas.getMaxSizeBytes(), this::onStoragePut, this::onReadComplete, delegate);
       case GRPC:
         checkState(delegate == null, "grpc cas cannot delegate");
         return createGrpcCAS(cas);
@@ -318,6 +321,7 @@ public final class Worker extends LoggingMain {
             removeDirectoryService,
             accessRecorder,
             this::onStoragePut,
+            this::onReadComplete,
             delegate == null ? this::onStorageExpire : (digests) -> {},
             delegate,
             delegateSkipLoad);
@@ -347,6 +351,9 @@ public final class Worker extends LoggingMain {
       if (configs.getWorker().getCapabilities().isCas()) {
         backplane.addBlobLocation(digest, configs.getWorker().getPublicName());
       }
+      if (configs.getBackplane().isEnableCasAccessMetrics()) {
+        casAccessMetricsRecorder.recordWrite(digest);
+      }
     } catch (IOException e) {
       throw Status.fromThrowable(e).asRuntimeException();
     }
@@ -360,6 +367,12 @@ public final class Worker extends LoggingMain {
       } catch (IOException e) {
         throw Status.fromThrowable(e).asRuntimeException();
       }
+    }
+  }
+
+  private void onReadComplete(Digest digest) {
+    if (configs.getBackplane().isEnableCasAccessMetrics()) {
+      casAccessMetricsRecorder.recordRead(digest);
     }
   }
 
@@ -575,6 +588,15 @@ public final class Worker extends LoggingMain {
     execFileSystem.start(
         (digests) -> addBlobsLocation(digests, configs.getWorker().getPublicName()), skipLoad);
 
+    if (configs.getBackplane().isEnableCasAccessMetrics()) {
+      casAccessMetricsRecorder =
+          new CASAccessMetricsRecorder(
+              backplane,
+              java.time.Duration.ofSeconds(configs.getBackplane().getCasReadCountWindow()),
+              java.time.Duration.ofSeconds(configs.getBackplane().getCasReadCountUpdateInterval()));
+      casAccessMetricsRecorder.start();
+    }
+
     server.start();
     healthStatusManager.setStatus(
         HealthStatusManager.SERVICE_NAME_ALL_SERVICES, ServingStatus.SERVING);
@@ -644,6 +666,9 @@ public final class Worker extends LoggingMain {
       log.info("Stopping exec filesystem");
       execFileSystem.stop();
       execFileSystem = null;
+    }
+    if (casAccessMetricsRecorder != null) {
+      casAccessMetricsRecorder.stop();
     }
     if (server != null) {
       log.info("Shutting down the server");

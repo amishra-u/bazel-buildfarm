@@ -154,6 +154,7 @@ class CASFileCacheTest {
             storage,
             /* directoriesIndexDbName=*/ ":memory:",
             onPut,
+            /* onReadComplete=*/ digest -> {},
             onExpire,
             delegate,
             /* delegateSkipLoad=*/ false) {
@@ -1118,6 +1119,7 @@ class CASFileCacheTest {
             storage,
             /* directoriesIndexDbName=*/ ":memory:",
             /* onPut=*/ digest -> {},
+            /* onReadComplete=*/ digest -> {},
             /* onExpire=*/ digests -> {},
             /* delegate=*/ null,
             /* delegateSkipLoad=*/ false) {
@@ -1181,6 +1183,7 @@ class CASFileCacheTest {
             storage,
             /* directoriesIndexDbName=*/ ":memory:",
             /* onPut=*/ digest -> {},
+            /* onReadComplete=*/ digest -> {},
             /* onExpire=*/ digests -> {},
             /* delegate=*/ null,
             /* delegateSkipLoad=*/ false) {
