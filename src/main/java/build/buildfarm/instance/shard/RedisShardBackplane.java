@@ -946,6 +946,25 @@ public class RedisShardBackplane implements Backplane {
     return state.casWorkerMap.getMap(client, blobDigests);
   }
 
+  @Override
+  public Map<String, Integer> updateCasReadCount(
+      Stream<Map.Entry<Digest, Integer>> casReadCountStream) throws IOException {
+    return client.call(
+        jedis ->
+            state.casReadCount.incrementMembersScore(
+                jedis,
+                casReadCountStream.map(
+                    entry ->
+                        new AbstractMap.SimpleEntry<>(
+                            entry.getKey().getHash(), entry.getValue()))));
+  }
+
+  @Override
+  public int removeCasReadCountEntries(Stream<Digest> digestsToBeRemoved) throws IOException {
+    return client.call(
+        jedis -> state.casReadCount.removeMembers(jedis, digestsToBeRemoved.map(Digest::getHash)));
+  }
+
   public static WorkerChange parseWorkerChange(String workerChangeJson)
       throws InvalidProtocolBufferException {
     WorkerChange.Builder workerChange = WorkerChange.newBuilder();

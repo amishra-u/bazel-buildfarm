@@ -35,6 +35,7 @@ public class Backplane {
   private String operationChannelPrefix = "OperationChannel";
   private String casPrefix = "ContentAddressableStorage";
   private int casExpire = 604800; // 1 Week
+  private String casReadCountSetName = "CasReadCount";
 
   @Getter(AccessLevel.NONE)
   private boolean subscribeToBackplane = true; // deprecated

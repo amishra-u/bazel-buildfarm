@@ -41,8 +41,10 @@ import java.io.IOException;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Random;
 import java.util.Set;
 import java.util.UUID;
 import java.util.function.Supplier;
@@ -53,8 +55,11 @@ import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
+import org.mockito.Mockito;
 import org.mockito.MockitoAnnotations;
 import redis.clients.jedis.JedisCluster;
+import redis.clients.jedis.JedisClusterPipeline;
+import redis.clients.jedis.Response;
 
 @RunWith(JUnit4.class)
 public class RedisShardBackplaneTest {
@@ -397,5 +402,64 @@ public class RedisShardBackplaneTest {
     assertThat(insertTimeInSecs)
         .isGreaterThan(Instant.now().getEpochSecond() - expirationInSecs + ttl - 2);
     assertThat(insertTimeInSecs).isAtMost(Instant.now().getEpochSecond() - expirationInSecs + ttl);
+  }
+
+  @Test
+  public void testUpdateCasReadCount() throws IOException {
+    JedisCluster jedisCluster = mock(JedisCluster.class);
+    JedisClusterPipeline pipeline = mock(JedisClusterPipeline.class);
+    when(mockJedisClusterFactory.get()).thenReturn(jedisCluster);
+    when(jedisCluster.pipelined()).thenReturn(pipeline);
+    RedisShardBackplane backplane = createBackplane("cas-readcount-test");
+    backplane.start("startTime/test:0000");
+
+    Map<Digest, Integer> digestsAndReadCount = getDigestsAndReadCountMap(10);
+
+    digestsAndReadCount.forEach(
+        (digest, readCount) -> {
+          Response<Double> mockResponse = Mockito.mock(Response.class);
+          when(mockResponse.get()).thenReturn(readCount.doubleValue());
+          when(pipeline.zincrby("CasReadCount", readCount, digest.getHash()))
+              .thenReturn(mockResponse);
+        });
+
+    Map<String, Integer> actualReadCount =
+        backplane.updateCasReadCount(digestsAndReadCount.entrySet().stream());
+
+    digestsAndReadCount.forEach(
+        (digest, expectedReadCount) -> {
+          assertThat(actualReadCount.get(digest.getHash())).isEqualTo(expectedReadCount);
+        });
+  }
+
+  @Test
+  public void testRemoveCasReadCountEntries() throws IOException {
+    JedisCluster jedisCluster = mock(JedisCluster.class);
+    when(mockJedisClusterFactory.get()).thenReturn(jedisCluster);
+    RedisShardBackplane backplane = createBackplane("cas-readcount-test");
+    backplane.start("startTime/test:0000");
+
+    List<Digest> digests = new ArrayList<>();
+    List<String> digestHashes = new ArrayList<>();
+    int numberOfDigestsToBeRemoved = 10;
+    for (int i = 0; i < numberOfDigestsToBeRemoved; i++) {
+      digestHashes.add(UUID.randomUUID().toString());
+      digests.add(Digest.newBuilder().setHash(digestHashes.get(i)).build());
+    }
+
+    when(jedisCluster.zrem(eq("CasReadCount"), any()))
+        .thenReturn((long) numberOfDigestsToBeRemoved);
+    assertThat(backplane.removeCasReadCountEntries(digests.stream()))
+        .isEqualTo(numberOfDigestsToBeRemoved);
+  }
+
+  private Map<Digest, Integer> getDigestsAndReadCountMap(int size) {
+    Random random = new Random();
+    Map<Digest, Integer> digestsAndReadCount = new HashMap<>();
+    while (size-- > 0) {
+      digestsAndReadCount.put(
+          Digest.newBuilder().setHash(UUID.randomUUID().toString()).build(), random.nextInt(100));
+    }
+    return digestsAndReadCount;
   }
 }

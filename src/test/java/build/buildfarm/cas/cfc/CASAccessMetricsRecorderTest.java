@@ -4,6 +4,10 @@ import static com.google.common.truth.Truth.assertThat;
 import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.fail;
 import static org.junit.Assume.assumeTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.atLeast;
+import static org.mockito.Mockito.verify;
+import static org.mockito.internal.verification.VerificationModeFactory.times;
 
 import build.bazel.remote.execution.v2.Digest;
 import build.buildfarm.backplane.Backplane;
@@ -93,6 +97,10 @@ public class CASAccessMetricsRecorderTest {
     for (Thread thread : threads) {
       thread.join();
     }
+
+    verify(backplane, atLeast(numberOfDelayCycles + (int) (window / delay)))
+        .updateCasReadCount(any());
+    verify(backplane, times(0)).removeCasReadCountEntries(any());
   }
 
   @Test

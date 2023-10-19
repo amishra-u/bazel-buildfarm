@@ -4,6 +4,7 @@ import static java.lang.String.format;
 
 import build.bazel.remote.execution.v2.Digest;
 import build.buildfarm.backplane.Backplane;
+import build.buildfarm.common.DigestUtil;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Stopwatch;
@@ -11,8 +12,10 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.Deque;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedList;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -20,6 +23,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.logging.Level;
 import lombok.extern.java.Log;
 
 /**
@@ -44,7 +48,6 @@ public final class CASAccessMetricsRecorder {
 
   private boolean running = false;
 
-  @SuppressWarnings("unused")
   private final Backplane backplane;
 
   final ReadWriteLock lock = new ReentrantReadWriteLock();
@@ -166,7 +169,13 @@ public final class CASAccessMetricsRecorder {
             effectiveReadCount.compute(
                 k, (digest, readCount) -> readCount == null ? -v.get() : readCount - v.get()));
 
-    // TODO : Implement logic to update read counts in redis.
+    try {
+      Map<String, Integer> updatedReadCount =
+          backplane.updateCasReadCount(effectiveReadCount.entrySet().stream());
+      expireUnreadEntries(updatedReadCount, firstIntervalReadCount);
+    } catch (Exception e) {
+      log.log(Level.WARNING, "Failed to update the cas read count to backplane", e);
+    }
 
     long timeToUpdate = stopwatch.stop().elapsed().toMillis();
     log.fine(format("Took %d ms to update read count.", timeToUpdate));
@@ -174,6 +183,33 @@ public final class CASAccessMetricsRecorder {
     if (timeToUpdate >= casEntryReadCountUpdateInterval.toMillis()) {
       log.warning(
           "Consider increasing the update interval: read count update time exceeds the update interval.");
+    }
+  }
+
+  private void expireUnreadEntries(
+      Map<String, Integer> casReadCount, Map<Digest, AtomicInteger> firstIntervalReadCount) {
+    Set<Digest> digestsToExpire = new HashSet<>();
+    firstIntervalReadCount.forEach(
+        (digest, readCount) -> {
+          Integer totalReadCount = casReadCount.get(digest.getHash());
+          if (totalReadCount != null && totalReadCount == 0) {
+            digestsToExpire.add(digest);
+            if (readCount.get() == 0) {
+              log.info(
+                  format(
+                      "Digest %s was not read once after being written in last %s duration",
+                      DigestUtil.toString(digest), casEntryReadCountWindow.toString()));
+            }
+          }
+        });
+    if (digestsToExpire.isEmpty()) {
+      return;
+    }
+    try {
+      int removedCount = backplane.removeCasReadCountEntries(digestsToExpire.stream());
+      log.fine(format("Number of cas read count entries removed : %d", removedCount));
+    } catch (Exception e) {
+      log.log(Level.WARNING, "Failed to remove cas read count entries", e);
     }
   }
 
