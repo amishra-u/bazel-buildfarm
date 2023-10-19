@@ -44,6 +44,7 @@ public final class CASAccessMetricsRecorder {
 
   private boolean running = false;
 
+  @SuppressWarnings("unused")
   private final Backplane backplane;
 
   final ReadWriteLock lock = new ReentrantReadWriteLock();
@@ -164,6 +165,8 @@ public final class CASAccessMetricsRecorder {
         (k, v) ->
             effectiveReadCount.compute(
                 k, (digest, readCount) -> readCount == null ? -v.get() : readCount - v.get()));
+
+    // TODO : Implement logic to update read counts in redis.
 
     long timeToUpdate = stopwatch.stop().elapsed().toMillis();
     log.fine(format("Took %d ms to update read count.", timeToUpdate));
