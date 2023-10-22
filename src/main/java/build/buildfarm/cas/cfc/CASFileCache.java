@@ -883,6 +883,7 @@ public abstract class CASFileCache implements ContentAddressableStorage {
                       + key.getIdentifier(),
                   e);
             } finally {
+              closedFuture.set(null);
               isReset = true;
             }
           }
