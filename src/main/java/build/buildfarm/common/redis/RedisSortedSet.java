@@ -2,6 +2,7 @@ package build.buildfarm.common.redis;
 
 import java.util.AbstractMap;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -48,15 +49,18 @@ public class RedisSortedSet {
   public Map<String, Integer> incrementMembersScore(
       JedisCluster jedis, Stream<Map.Entry<String, Integer>> memberAndScore) {
     JedisClusterPipeline pipeline = jedis.pipelined();
-    Stream<AbstractMap.SimpleEntry<String, Response<Double>>> updatedScoreResponse =
+   Map<String, Response<Double>> updatedScoreResponse =
         memberAndScore.map(
             entry ->
                 new AbstractMap.SimpleEntry<>(
-                    entry.getKey(), pipeline.zincrby(this.name, entry.getValue(), entry.getKey())));
+                    entry.getKey(), pipeline.zincrby(this.name, entry.getValue(), entry.getKey())))
+            .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
     pipeline.sync();
+
+    Map<String, Integer> updatedScore = new HashMap<>();
     // keep the last score for a key.
-    return updatedScoreResponse.collect(
-        Collectors.toMap(Map.Entry::getKey, entry -> entry.getValue().get().intValue()));
+    updatedScoreResponse.forEach((key, response) -> updatedScore.put(key, response.get().intValue()));
+    return updatedScore;
   }
 
   /**
