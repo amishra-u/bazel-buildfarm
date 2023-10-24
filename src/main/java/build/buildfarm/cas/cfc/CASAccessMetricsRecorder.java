@@ -10,10 +10,12 @@ import com.google.common.base.Preconditions;
 import com.google.common.base.Stopwatch;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Deque;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedList;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -24,6 +26,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.logging.Level;
+
 import lombok.extern.java.Log;
 
 /**
@@ -128,6 +131,7 @@ public final class CASAccessMetricsRecorder {
   public void stop() throws InterruptedException {
     running = false;
     scheduler.shutdown();
+    cleanUp();
     if (!scheduler.awaitTermination(10, TimeUnit.SECONDS)) {
       log.severe("Could not shut down cas access metrics recorder service");
     }
@@ -210,6 +214,30 @@ public final class CASAccessMetricsRecorder {
       log.fine(format("Number of cas read count entries removed : %d", removedCount));
     } catch (Exception e) {
       log.log(Level.WARNING, "Failed to remove cas read count entries", e);
+    }
+  }
+
+  private void cleanUp() {
+    lock.writeLock().lock();
+    try {
+      Map<Digest, Integer> aggregateDigestReadCount = new HashMap<>();
+      while (!readIntervalCountQueue.isEmpty()) {
+        readIntervalCountQueue.poll().forEach((digest, readCount) ->
+          aggregateDigestReadCount.compute(digest, (k, v) -> v == null ? -readCount.get() : v - readCount.get()));
+      }
+      List<Digest> digestsToRemove = new ArrayList<>();
+      Map<String, Integer> updatedReadCount =
+          backplane.updateCasReadCount(aggregateDigestReadCount.entrySet().stream());
+      aggregateDigestReadCount.forEach((digest, integer) -> {
+        if (updatedReadCount.get(digest.getHash()) == 0) {
+          digestsToRemove.add(digest);
+        }
+      });
+      backplane.removeCasReadCountEntries(digestsToRemove.stream());
+    } catch (Exception e) {
+      log.log(Level.WARNING, "Failed to cleanup read count");
+    } finally {
+      lock.writeLock().unlock();
     }
   }
 

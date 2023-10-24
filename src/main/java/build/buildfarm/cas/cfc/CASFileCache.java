@@ -65,6 +65,7 @@ import build.buildfarm.common.ZstdDecompressingOutputStream;
 import build.buildfarm.common.config.Cas;
 import build.buildfarm.common.grpc.Retrier;
 import build.buildfarm.common.grpc.Retrier.Backoff;
+import build.buildfarm.common.grpc.TracingMetadataUtils;
 import build.buildfarm.common.io.CountingOutputStream;
 import build.buildfarm.common.io.Directories;
 import build.buildfarm.common.io.FeedbackOutputStream;
@@ -3015,6 +3016,10 @@ public abstract class CASFileCache implements ContentAddressableStorage {
             throw new IllegalStateException("storage conflict with existing key for " + key);
           }
         } else if (writeWinner.get()) {
+          RequestMetadata requestMetadata = TracingMetadataUtils.fromCurrentContext();
+          log.log(Level.INFO, format(
+              "Successfully wrote: %s; metadata: actionId - %s, actionMnemonic - %s, target - %s",
+              key, requestMetadata.getActionId(), requestMetadata.getActionMnemonic(), requestMetadata.getTargetId()));
           log.log(Level.FINER, "won the race to insert " + key);
           try {
             onInsert.run();
