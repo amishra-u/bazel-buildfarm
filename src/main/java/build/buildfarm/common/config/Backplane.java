@@ -36,6 +36,9 @@ public class Backplane {
   private String casPrefix = "ContentAddressableStorage";
   private int casExpire = 604800; // 1 Week
   private String casReadCountSetName = "CasReadCount";
+  private boolean enableCasAccessMetrics = false;
+  private int casReadCountWindow = 14400; // 4 hours
+  private int casReadCountUpdateInterval = 900; // 15 mins
 
   @Getter(AccessLevel.NONE)
   private boolean subscribeToBackplane = true; // deprecated
