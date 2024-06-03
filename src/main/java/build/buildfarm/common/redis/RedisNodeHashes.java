@@ -18,8 +18,15 @@ import static com.google.common.collect.Iterables.transform;
 import static redis.clients.jedis.Protocol.CLUSTER_HASHSLOTS;
 
 import com.google.common.collect.ImmutableList;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+
 import redis.clients.jedis.ConnectionPool;
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisCluster;
@@ -27,6 +34,7 @@ import redis.clients.jedis.UnifiedJedis;
 import redis.clients.jedis.exceptions.JedisClusterOperationException;
 import redis.clients.jedis.exceptions.JedisException;
 import redis.clients.jedis.resps.ClusterShardInfo;
+import redis.clients.jedis.util.SafeEncoder;
 
 /**
  * @class RedisNodeHashes
@@ -121,7 +129,7 @@ public class RedisNodeHashes {
     for (Map.Entry<String, ConnectionPool> node : jedis.getClusterNodes().entrySet()) {
       ConnectionPool pool = node.getValue();
       try (Jedis resource = new Jedis(pool.getResource())) {
-        return resource.clusterShards();
+        return toShards(resource.clusterSlots());
       } catch (JedisException e) {
         nodeException = e;
         // log error with node
@@ -131,5 +139,29 @@ public class RedisNodeHashes {
       throw nodeException;
     }
     throw new JedisClusterOperationException("No reachable node in cluster");
+  }
+
+  private static List<ClusterShardInfo> toShards(List<Object> slots) {
+    List<ClusterShardInfo> shards = new ArrayList<>();
+    Set<String> nodes = new HashSet<>();
+    for (Object slot : slots) {
+      List<Object> slotInfo = (List<Object>) slot;
+      List<Object> slotRangeNodes = (List<Object>) slotInfo.get(2);
+      String nodeId = SafeEncoder.encode((byte[]) slotRangeNodes.get(2));
+      if (!nodes.add(nodeId)) {
+        continue;
+      }
+      List<Long> slotNums = slotInfoToSlotRange(slotInfo);
+      Map<String, Object> shardMap = new HashMap<>();
+      shardMap.put("slots", Collections.singletonList(slotNums));
+      shardMap.put("nodes", slotRangeNodes);
+      ClusterShardInfo shardInfo = new ClusterShardInfo(shardMap);
+      shards.add(shardInfo);
+    }
+    return shards;
+  }
+
+  private static List<Long> slotInfoToSlotRange(List<Object> slotInfo) {
+    return ImmutableList.of((Long) slotInfo.get(0), (Long) slotInfo.get(1));
   }
 }

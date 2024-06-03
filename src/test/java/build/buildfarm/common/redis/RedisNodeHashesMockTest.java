@@ -24,9 +24,11 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 import static redis.clients.jedis.Protocol.ClusterKeyword.SHARDS;
+import static redis.clients.jedis.Protocol.ClusterKeyword.SLOTS;
 import static redis.clients.jedis.Protocol.Command.CLUSTER;
 
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -57,12 +59,9 @@ public class RedisNodeHashesMockTest {
     // ARRANGE
     Connection connection = spy(Connection.class);
     doNothing().when(connection).connect();
-    doNothing().when(connection).sendCommand(CLUSTER, SHARDS);
+    doNothing().when(connection).sendCommand(CLUSTER, SLOTS);
     doReturn(
-            Arrays.asList(
-                Arrays.asList(
-                    SafeEncoder.encode(ClusterShardInfo.SLOTS), Arrays.asList(0L, 100L),
-                    SafeEncoder.encode(ClusterShardInfo.NODES), Arrays.asList())))
+        Collections.singletonList(Arrays.asList(0L, 100L, Arrays.asList(null, null, SafeEncoder.encode("nodeId")))))
         .when(connection)
         .getObjectMultiBulkReply();
 
@@ -118,15 +117,11 @@ public class RedisNodeHashesMockTest {
     // ARRANGE
     Connection connection = spy(Connection.class);
     doNothing().when(connection).connect();
-    doNothing().when(connection).sendCommand(CLUSTER, SHARDS);
+    doNothing().when(connection).sendCommand(CLUSTER, SLOTS);
     doReturn(
-            Arrays.asList(
-                Arrays.asList(
-                    SafeEncoder.encode(ClusterShardInfo.SLOTS), Arrays.asList(0L, 100L),
-                    SafeEncoder.encode(ClusterShardInfo.NODES), Arrays.asList()),
-                Arrays.asList(
-                    SafeEncoder.encode(ClusterShardInfo.SLOTS), Arrays.asList(101L, 200L),
-                    SafeEncoder.encode(ClusterShardInfo.NODES), Arrays.asList())))
+        Arrays.asList(
+            Arrays.asList(0L, 100L, Arrays.asList(null, null, SafeEncoder.encode("nodeId0"))),
+            Arrays.asList(101L, 200L, Arrays.asList(null, null, SafeEncoder.encode("nodeId1")))))
         .when(connection)
         .getObjectMultiBulkReply();
     doReturn(false).when(connection).isBroken();
@@ -145,7 +140,7 @@ public class RedisNodeHashesMockTest {
         RedisNodeHashes.getEvenlyDistributedHashesWithPrefix(redis, "Execution");
 
     // ASSERT
-    verify(connection, times(1)).sendCommand(CLUSTER, SHARDS);
+    verify(connection, times(1)).sendCommand(CLUSTER, SLOTS);
     verify(connection, times(1)).getObjectMultiBulkReply();
     verify(connection, times(1)).close();
     verify(connection, times(1)).isBroken();
