@@ -32,6 +32,9 @@ import io.grpc.StatusRuntimeException;
 import io.grpc.stub.ServerCallStreamObserver;
 import io.grpc.stub.StreamObserver;
 import io.prometheus.client.Counter;
+
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.logging.Level;
 import javax.annotation.Nullable;
 import lombok.extern.java.Log;
@@ -54,6 +57,7 @@ public class ActionCacheService extends ActionCacheGrpc.ActionCacheImplBase {
   @Override
   public void getActionResult(
       GetActionResultRequest request, StreamObserver<ActionResult> responseObserver) {
+    Instant start = Instant.now();
     ListenableFuture<ActionResult> resultFuture =
         instance.getActionResult(
             DigestUtil.asActionKey(request.getActionDigest()),
@@ -77,6 +81,8 @@ public class ActionCacheService extends ActionCacheGrpc.ActionCacheImplBase {
             } catch (StatusRuntimeException e) {
               onFailure(e);
             }
+            // temporary logging to debug android issue
+            log.info("GetAC: " + DigestUtil.toString(request.getActionDigest()) + " latency: " + start.until(Instant.now(), ChronoUnit.MILLIS) + "ms");
           }
 
           @SuppressWarnings("NullableProblems")

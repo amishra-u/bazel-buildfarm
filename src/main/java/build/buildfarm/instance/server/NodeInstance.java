@@ -124,6 +124,8 @@ import java.net.HttpURLConnection;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.nio.file.NoSuchFileException;
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -369,7 +371,12 @@ public abstract class NodeInstance implements Instance {
       ActionKey actionKey, RequestMetadata requestMetadata) {
     ListenableFuture<ActionResult> result = checkNotNull(actionCache.get(actionKey));
     if (shouldEnsureOutputsPresent(ensureOutputsPresent, requestMetadata)) {
+      Instant startTime = Instant.now();
       result = checkNotNull(ensureOutputsPresent(result, requestMetadata));
+      log.info(
+          format(
+              "Action %s ensure took %d ms",
+              DigestUtil.toString(actionKey.getDigest()), startTime.until(Instant.now(), ChronoUnit.MILLIS)));
     }
     return result;
   }
