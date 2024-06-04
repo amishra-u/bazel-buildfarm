@@ -109,6 +109,7 @@ public class WorkerInstance extends NodeInstance {
       ServerCallStreamObserver<ByteString> blobObserver,
       RequestMetadata requestMetadata) {
     Preconditions.checkState(count != 0);
+    final Integer[] dataSent = {0};
     contentAddressableStorage.get(
         compressor,
         digest,
@@ -119,6 +120,7 @@ public class WorkerInstance extends NodeInstance {
           public void onNext(ByteString data) {
             blobObserver.onNext(data);
             IO_METRIC.inc(data.size());
+            dataSent[0] += data.size();
           }
 
           void removeBlobLocation() {
@@ -134,7 +136,7 @@ public class WorkerInstance extends NodeInstance {
 
           @Override
           public void onError(Throwable t) {
-            log.log(Level.SEVERE, String.format("error reading blob %s after %d message", DigestUtil.toString(digest), count), t);
+            log.log(Level.SEVERE, String.format("error reading blob %s after %d message", DigestUtil.toString(digest), dataSent[0]), t);
             if (t instanceof IOException) {
               blobObserver.onError(Status.NOT_FOUND.withCause(t).asException());
               removeBlobLocation();

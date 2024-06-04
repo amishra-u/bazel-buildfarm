@@ -276,6 +276,7 @@ public class ByteStreamService extends ByteStreamImplBase {
       } else {
         limit = Math.min(available, limit);
       }
+      log.log(Level.INFO, format("readBlob(%s, %d, %d)", DigestUtil.toString(downloadBlobRequest.getBlob().getDigest()), offset, limit));
       readLimitedBlob(instance, downloadBlobRequest, offset, limit, responseObserver);
     }
   }

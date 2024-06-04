@@ -1161,6 +1161,7 @@ public class ServerInstance extends NodeInstance {
           @Override
           public void onNext(ByteString nextChunk) {
             blobObserver.onNext(nextChunk);
+            log.info("digest:" + DigestUtil.toString(blobDigest)+ " onNext: " + nextChunk.size());
           }
 
           @Override
