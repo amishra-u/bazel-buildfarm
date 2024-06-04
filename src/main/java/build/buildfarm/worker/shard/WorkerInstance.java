@@ -134,9 +134,7 @@ public class WorkerInstance extends NodeInstance {
 
           @Override
           public void onError(Throwable t) {
-            if (count > 0) {
             log.log(Level.SEVERE, String.format("error reading blob %s after %d message", DigestUtil.toString(digest), count), t);
-            }
             if (t instanceof IOException) {
               blobObserver.onError(Status.NOT_FOUND.withCause(t).asException());
               removeBlobLocation();

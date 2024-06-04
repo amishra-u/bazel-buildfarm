@@ -438,6 +438,7 @@ public abstract class CASFileCache implements ContentAddressableStorage {
     /* could also bucket these */
     try {
       accessRecorder.execute(() -> recordAccess(keys));
+      log.log(Level.INFO, format("recorded access for %d keys", Iterables.size(keys)));
     } catch (RejectedExecutionException e) {
       log.log(Level.SEVERE, format("could not record access for %d keys", Iterables.size(keys)), e);
     }
@@ -524,7 +525,7 @@ public abstract class CASFileCache implements ContentAddressableStorage {
   @SuppressWarnings("ResultOfMethodCallIgnored")
   InputStream newLocalInput(Compressor.Value compressor, Digest digest, long offset)
       throws IOException {
-    log.log(Level.FINER, format("getting input stream for %s", DigestUtil.toString(digest)));
+    log.log(Level.INFO, format("getting input stream for %s", DigestUtil.toString(digest)));
     boolean isExecutable = false;
     do {
       String key = getKey(digest, isExecutable);
@@ -535,6 +536,7 @@ public abstract class CASFileCache implements ContentAddressableStorage {
           input = compressorInputStream(compressor, Files.newInputStream(getPath(key)));
           input.skip(offset);
         } catch (NoSuchFileException eNoEnt) {
+          log.log(Level.INFO, format("entry %s missing, removing", key));
           boolean removed = false;
           synchronized (this) {
             Entry removedEntry = storage.remove(key);
@@ -559,6 +561,7 @@ public abstract class CASFileCache implements ContentAddressableStorage {
       }
       isExecutable = !isExecutable;
     } while (isExecutable);
+    log.log(Level.INFO, format("entry %s missing", getKey(digest, true)));
     throw new NoSuchFileException(DigestUtil.toString(digest));
   }
 
@@ -694,6 +697,7 @@ public abstract class CASFileCache implements ContentAddressableStorage {
         if (len < 0) {
           in.close();
           blobObserver.onCompleted();
+          log.info("read completed for digest: " + DigestUtil.toString(digest));
         }
       }
     }
